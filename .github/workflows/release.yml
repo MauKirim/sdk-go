@@ -1,0 +1,52 @@
+name: Release
+
+# Go modules are published by pushing a semver tag; pkg.go.dev indexes whatever the module proxy
+# serves. The tag must be `v<major>.<minor>.<patch>` and match the module path.
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Verify and warm the pkg.go.dev index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Tag must be a valid module version
+        run: |
+          if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::$GITHUB_REF_NAME is not a semver module version"
+            exit 1
+          fi
+
+      - run: gofmt -l . && test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./... -race -count=1
+
+      - name: Warm proxy.golang.org so pkg.go.dev renders the version
+        run: |
+          # Uppercase letters in a module path are escaped as !<lower>.
+          escaped="$(printf '%s' "github.com/MauKirim/sdk-go" | sed 's/\([A-Z]\)/!\L\1/g')"
+          url="https://proxy.golang.org/${escaped}/@v/${GITHUB_REF_NAME}.info"
+          echo "Fetching $url"
+          for i in 1 2 3 4 5; do
+            if curl -fsS "$url"; then echo; echo "module proxy has $GITHUB_REF_NAME"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::proxy.golang.org has not served $GITHUB_REF_NAME yet"
+          exit 1
+
+      - name: Documentation
+        run: echo "https://pkg.go.dev/github.com/MauKirim/sdk-go@${GITHUB_REF_NAME}"
